@@ -3,6 +3,7 @@ import anthropic
 import json
 import os
 import asyncio
+from datetime import datetime, timezone, timedelta
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -11,6 +12,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 CHECK_INTERVAL_MINUTES = 60
 MAX_NEWS_PER_RUN = 15
+HOURS_LOOKBACK = 2
 
 RSS_FEEDS = [
     "https://cryptopanic.com/news/rss/",
@@ -37,30 +39,33 @@ NITTER_INSTANCES = [
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)
+sent_ids = set()
 
-def load_seen_ids():
-    if os.path.exists("seen_ids.json"):
-        with open("seen_ids.json") as f:
-            return set(json.load(f))
-    return set()
-
-def save_seen_ids(ids):
-    with open("seen_ids.json", "w") as f:
-        json.dump(list(ids), f)
+def is_recent(entry):
+    try:
+        import time
+        t = entry.get("published_parsed") or entry.get("updated_parsed")
+        if not t:
+            return True
+        pub_time = datetime.fromtimestamp(time.mktime(t), tz=timezone.utc)
+        return datetime.now(timezone.utc) - pub_time < timedelta(hours=HOURS_LOOKBACK)
+    except:
+        return True
 
 def fetch_news():
     items = []
     for url in RSS_FEEDS:
         try:
             feed = feedparser.parse(url)
-            for entry in feed.entries[:5]:
-                items.append({
-                    "id": entry.get("id", entry.link),
-                    "title": entry.title,
-                    "summary": entry.get("summary", "")[:300],
-                    "link": entry.link,
-                    "source": feed.feed.get("title", url)
-                })
+            for entry in feed.entries[:8]:
+                if is_recent(entry):
+                    items.append({
+                        "id": entry.get("id", entry.link),
+                        "title": entry.title,
+                        "summary": entry.get("summary", "")[:300],
+                        "link": entry.link,
+                        "source": feed.feed.get("title", url)
+                    })
         except Exception as e:
             print(f"Помилка RSS {url}: {e}")
     return items
@@ -75,13 +80,14 @@ def fetch_twitter():
                 feed = feedparser.parse(url)
                 if feed.entries:
                     for entry in feed.entries[:3]:
-                        items.append({
-                            "id": entry.get("id", entry.link),
-                            "title": f"@{account}: {entry.title}",
-                            "summary": entry.get("summary", "")[:300],
-                            "link": entry.link,
-                            "source": f"Twitter @{account}"
-                        })
+                        if is_recent(entry):
+                            items.append({
+                                "id": entry.get("id", entry.link),
+                                "title": f"@{account}: {entry.title}",
+                                "summary": entry.get("summary", "")[:300],
+                                "link": entry.link,
+                                "source": f"Twitter @{account}"
+                            })
                     fetched = True
                     break
             except Exception as e:
@@ -135,20 +141,24 @@ Sentiment: 🟢/🔴/⚪ + коротко чому
     return response.content[0].text
 
 async def run_digest():
+    global sent_ids
     print("Запуск дайджесту...")
-    seen_ids = load_seen_ids()
     all_items = fetch_news() + fetch_twitter()
-    new_items = [n for n in all_items if n["id"] not in seen_ids]
+    new_items = [n for n in all_items if n["id"] not in sent_ids]
+
     if not new_items:
         print("Нових новин немає.")
         return
+
     items_to_analyze = new_items[:MAX_NEWS_PER_RUN]
     analysis = analyze_with_claude(items_to_analyze)
+
     await bot.send_message(
         chat_id=TELEGRAM_CHAT_ID,
         text=analysis
     )
-    save_seen_ids(seen_ids | {n["id"] for n in items_to_analyze})
+
+    sent_ids.update(n["id"] for n in items_to_analyze)
     print(f"Відправлено {len(items_to_analyze)} матеріалів.")
 
 async def main():

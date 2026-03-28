@@ -1,16 +1,12 @@
 import feedparser
 import anthropic
 import os
-import asyncio
 from datetime import datetime, timezone, timedelta
-from telegram import Bot, Update
+from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 CHECK_INTERVAL_MINUTES = 60
@@ -24,14 +20,8 @@ RSS_FEEDS = [
 ]
 
 TWITTER_ACCOUNTS = [
-    "CryptoCapo_",
-    "PeterLBrandt",
-    "woonomic",
-    "RaoulGMI",
-    "saylor",
-    "DLavrov",
-    "ForexSignals",
-    "FXStreetNews",
+    "CryptoCapo_", "PeterLBrandt", "woonomic",
+    "RaoulGMI", "saylor", "DLavrov", "ForexSignals", "FXStreetNews",
 ]
 
 NITTER_INSTANCES = [
@@ -104,16 +94,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_subscriber(chat_id):
         await update.message.reply_text(
             "Ти вже підписаний на дайджест!\n\n"
-            "Команди:\n"
             "/stop — відписатись\n"
             "/status — перевірити статус"
         )
     else:
         add_subscriber(chat_id, username)
         await update.message.reply_text(
-            "Вітаю! Ти підписався на TradeAgent\n\n"
+            "Вітаю! Ти підписався на TradeAgent 📊\n\n"
             "Ти будеш отримувати дайджест крипто та форекс новин щогодини.\n\n"
-            "Команди:\n"
             "/stop — відписатись\n"
             "/status — перевірити статус"
         )
@@ -123,17 +111,17 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if is_subscriber(chat_id):
         remove_subscriber(chat_id)
-        await update.message.reply_text("Ти відписався від дайджесту. Повертайся будь-коли — /start")
+        await update.message.reply_text("Ти відписався. Повертайся будь-коли — /start")
     else:
-        await update.message.reply_text("Ти не підписаний. Натисни /start щоб підписатись")
+        await update.message.reply_text("Ти не підписаний. Натисни /start")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    subscribers = get_subscribers()
+    count = len(get_subscribers())
     if is_subscriber(chat_id):
         await update.message.reply_text(
-            f"Статус: активна підписка\n"
-            f"Всього підписників: {len(subscribers)}\n"
+            f"Статус: активна підписка ✅\n"
+            f"Всього підписників: {count}\n"
             f"Дайджест надходить щогодини"
         )
     else:
@@ -161,7 +149,6 @@ def fetch_news():
                         "id": entry.get("id", entry.link),
                         "title": entry.title,
                         "summary": entry.get("summary", "")[:300],
-                        "link": entry.link,
                         "source": feed.feed.get("title", url)
                     })
         except Exception as e:
@@ -171,11 +158,9 @@ def fetch_news():
 def fetch_twitter():
     items = []
     for account in TWITTER_ACCOUNTS:
-        fetched = False
         for instance in NITTER_INSTANCES:
             try:
-                url = f"{instance}/{account}/rss"
-                feed = feedparser.parse(url)
+                feed = feedparser.parse(f"{instance}/{account}/rss")
                 if feed.entries:
                     for entry in feed.entries[:3]:
                         if is_recent(entry):
@@ -183,15 +168,11 @@ def fetch_twitter():
                                 "id": entry.get("id", entry.link),
                                 "title": f"@{account}: {entry.title}",
                                 "summary": entry.get("summary", "")[:300],
-                                "link": entry.link,
                                 "source": f"Twitter @{account}"
                             })
-                    fetched = True
                     break
-            except Exception as e:
-                print(f"Nitter {instance} помилка для @{account}: {e}")
-        if not fetched:
-            print(f"Не вдалось отримати твіти @{account}")
+            except:
+                continue
     return items
 
 def analyze_with_claude(news_items):
@@ -202,43 +183,36 @@ def analyze_with_claude(news_items):
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=2000,
-        messages=[{"role": "user", "content": f"""Ти досвідчений торговий аналітик. Проаналізуй новини та твіти і склади красивий дайджест для трейдера в Telegram.
+        messages=[{"role": "user", "content": f"""Ти досвідчений торговий аналітик. Склади красивий дайджест для трейдера в Telegram.
 
-ВАЖЛИВО щодо форматування:
-- Використовуй емодзі для візуального розділення
-- Жодних зірочок **, решіток ##, підкреслень __ — тільки чистий текст і емодзі
-- Між кожною новиною роби відступ з лінією ——————
-- Sentiment позначай: 🟢 Бичачий / 🔴 Ведмежий / ⚪ Нейтральний
-- Активи позначай через 💎 (крипто) або 💱 (форекс/акції)
+Форматування:
+- Тільки чистий текст і емодзі, без **, ##, __
+- Між новинами лінія ——————
+- Sentiment: 🟢 Бичачий / 🔴 Ведмежий / ⚪ Нейтральний
+- Крипто активи: 💎, форекс: 💱
 
-СТРУКТУРА кожної важливої новини:
-📌 Заголовок новини
+Структура кожної важливої новини:
+📌 Заголовок
 
-Висновок: 2-3 речення з детальним поясненням що це означає для ринку і трейдера
+Висновок: 2-3 речення що це означає для трейдера
 
-Sentiment: 🟢/🔴/⚪ + коротко чому
+Sentiment: 🟢/🔴/⚪ + чому
 
-Активи: 💎 BTC, ETH або 💱 EUR/USD
+Активи: 💎 BTC або 💱 EUR/USD
 
 ——————
 
-Наприкінці зроби ЗАГАЛЬНИЙ ВИСНОВОК по ринку — 4-6 речень.
+Починай з: 📊 Дайджест ринку
+Закінчуй з: 🔮 Загальний висновок: [4-6 речень про ринок]
 
-Починай повідомлення з:
-📊 Дайджест ринку
+Відповідай українською.
 
-І завершуй:
-🔮 Загальний висновок:
-[твій висновок тут]
-
-Неважливі новини повністю ігноруй. Відповідай українською мовою.
-
-НОВИНИ ТА ТВІТИ:
+НОВИНИ:
 {news_text}"""}]
     )
     return response.content[0].text
 
-async def run_digest(bot):
+async def send_digest(context: ContextTypes.DEFAULT_TYPE):
     global sent_ids
     print("Запуск дайджесту...")
     all_items = fetch_news() + fetch_twitter()
@@ -253,35 +227,23 @@ async def run_digest(bot):
     sent_ids.update(n["id"] for n in items_to_analyze)
 
     subscribers = get_subscribers()
-    print(f"Надсилаємо {len(subscribers)} підписникам...")
-
     for chat_id in subscribers:
         try:
-            await bot.send_message(chat_id=chat_id, text=analysis)
+            await context.bot.send_message(chat_id=chat_id, text=analysis)
         except Exception as e:
-            print(f"Помилка надсилання {chat_id}: {e}")
+            print(f"Помилка {chat_id}: {e}")
 
-    print(f"Відправлено {len(items_to_analyze)} матеріалів {len(subscribers)} підписникам.")
+    print(f"Відправлено {len(subscribers)} підписникам.")
 
-async def main():
+def main():
     init_db()
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stop", stop))
     app.add_handler(CommandHandler("status", status))
-
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        run_digest,
-        "interval",
-        minutes=CHECK_INTERVAL_MINUTES,
-        args=[app.bot]
-    )
-    scheduler.start()
-
-    await run_digest(app.bot)
-    print(f"Бот працює. Перевірка кожні {CHECK_INTERVAL_MINUTES} хв.")
-    await app.run_polling()
+    app.job_queue.run_repeating(send_digest, interval=CHECK_INTERVAL_MINUTES * 60, first=10)
+    print("Бот запущено!")
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

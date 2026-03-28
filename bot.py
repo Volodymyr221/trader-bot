@@ -5,7 +5,18 @@ import os
 import asyncio
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from config import *
+
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+CHECK_INTERVAL_MINUTES = 60
+MAX_NEWS_PER_RUN = 10
+
+RSS_FEEDS = [
+    "https://cryptopanic.com/news/rss/",
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
+]
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 bot = Bot(token=TELEGRAM_TOKEN)

@@ -2,3 +2,4 @@ feedparser
 anthropic
 python-telegram-bot
 apscheduler
+psycopg2-binary

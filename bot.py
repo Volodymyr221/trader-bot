@@ -97,17 +97,39 @@ def analyze_with_claude(news_items):
     ])
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=1500,
-        messages=[{"role": "user", "content": f"""Ти асистент трейдера. Проаналізуй новини та твіти з крипто та форекс ринків.
+        max_tokens=2000,
+        messages=[{"role": "user", "content": f"""Ти досвідчений торговий аналітик. Проаналізуй новини та твіти і склади красивий дайджест для трейдера в Telegram.
 
-Для кожної ВАЖЛИВОЇ новини або твіту дай:
-- Короткий висновок (1-2 речення)
-- Sentiment: бичачий / ведмежий / нейтральний
-- Які активи зачіпає (BTC, ETH, EUR/USD тощо)
+ВАЖЛИВО щодо форматування:
+- Використовуй емодзі для візуального розділення
+- Жодних зірочок **, решіток ##, підкреслень __ — тільки чистий текст і емодзі
+- Між кожною новиною роби відступ з лінією ——————
+- Sentiment позначай: 🟢 Бичачий / 🔴 Ведмежий / ⚪ Нейтральний
+- Активи позначай через 💎 (крипто) або 💱 (форекс/акції)
 
-Неважливе ігноруй. Відповідай українською.
+СТРУКТУРА кожної важливої новини:
+📌 Заголовок новини
 
-ДЖЕРЕЛА:
+Висновок: 2-3 речення з детальним поясненням що це означає для ринку і трейдера
+
+Sentiment: 🟢/🔴/⚪ + коротко чому
+
+Активи: 💎 BTC, ETH або 💱 EUR/USD
+
+——————
+
+Наприкінці зроби ЗАГАЛЬНИЙ ВИСНОВОК по ринку — 4-6 речень. Що домінує зараз, бики чи ведмеді, на що звернути увагу трейдеру сьогодні, які активи виглядають цікаво.
+
+Починай повідомлення з:
+📊 Дайджест ринку
+
+І завершуй:
+🔮 Загальний висновок:
+[твій висновок тут]
+
+Неважливі новини повністю ігноруй. Відповідай українською мовою.
+
+НОВИНИ ТА ТВІТИ:
 {news_text}"""}]
     )
     return response.content[0].text
@@ -115,22 +137,17 @@ def analyze_with_claude(news_items):
 async def run_digest():
     print("Запуск дайджесту...")
     seen_ids = load_seen_ids()
-
     all_items = fetch_news() + fetch_twitter()
     new_items = [n for n in all_items if n["id"] not in seen_ids]
-
     if not new_items:
         print("Нових новин немає.")
         return
-
     items_to_analyze = new_items[:MAX_NEWS_PER_RUN]
     analysis = analyze_with_claude(items_to_analyze)
-
     await bot.send_message(
         chat_id=TELEGRAM_CHAT_ID,
-        text=f"Дайджест новин + Twitter\n\n{analysis}"
+        text=analysis
     )
-
     save_seen_ids(seen_ids | {n["id"] for n in items_to_analyze})
     print(f"Відправлено {len(items_to_analyze)} матеріалів.")
 

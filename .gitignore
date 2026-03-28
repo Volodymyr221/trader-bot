@@ -1,0 +1,4 @@
+config.py
+seen_ids.json
+venv/
+__pycache__/

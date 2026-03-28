@@ -1,0 +1,88 @@
+import feedparser
+import anthropic
+import json
+import os
+import asyncio
+from telegram import Bot
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from config import *
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+bot = Bot(token=TELEGRAM_TOKEN)
+
+def load_seen_ids():
+    if os.path.exists("seen_ids.json"):
+        with open("seen_ids.json") as f:
+            return set(json.load(f))
+    return set()
+
+def save_seen_ids(ids):
+    with open("seen_ids.json", "w") as f:
+        json.dump(list(ids), f)
+
+def fetch_news():
+    items = []
+    for url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:5]:
+                items.append({
+                    "id": entry.get("id", entry.link),
+                    "title": entry.title,
+                    "summary": entry.get("summary", "")[:300],
+                    "link": entry.link,
+                    "source": feed.feed.get("title", url)
+                })
+        except Exception as e:
+            print(f"Помилка RSS {url}: {e}")
+    return items
+
+def analyze_with_claude(news_items):
+    news_text = "\n\n".join([
+        f"[{item['source']}] {item['title']}\n{item['summary']}"
+        for item in news_items
+    ])
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        messages=[{"role": "user", "content": f"""Ти асистент трейдера. Проаналізуй новини з крипто та форекс ринків.
+
+Для кожної ВАЖЛИВОЇ новини дай:
+- Короткий висновок (1-2 речення)
+- Sentiment: бичачий / ведмежий / нейтральний
+- Які активи зачіпає
+
+Неважливі новини ігноруй. Відповідай українською.
+
+НОВИНИ:
+{news_text}"""}]
+    )
+    return response.content[0].text
+
+async def run_digest():
+    print("Запуск дайджесту...")
+    seen_ids = load_seen_ids()
+    all_news = fetch_news()
+    new_items = [n for n in all_news if n["id"] not in seen_ids]
+    if not new_items:
+        print("Нових новин немає.")
+        return
+    items_to_analyze = new_items[:MAX_NEWS_PER_RUN]
+    analysis = analyze_with_claude(items_to_analyze)
+    await bot.send_message(
+        chat_id=TELEGRAM_CHAT_ID,
+        text=f"Дайджест новин\n\n{analysis}"
+    )
+    save_seen_ids(seen_ids | {n["id"] for n in items_to_analyze})
+    print(f"Відправлено {len(items_to_analyze)} новин.")
+
+async def main():
+    await run_digest()
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(run_digest, "interval", minutes=CHECK_INTERVAL_MINUTES)
+    scheduler.start()
+    print(f"Бот працює. Перевірка кожні {CHECK_INTERVAL_MINUTES} хв.")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())

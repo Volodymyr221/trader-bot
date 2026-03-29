@@ -23,7 +23,7 @@ SECTORS = {
     "metals": {
         "name": "🥇 Метали",
         "keywords": ["gold", "silver", "XAU", "XAG", "XAUUSD", "XAGUSD", "золот", "срібл", "метал"],
-        "tickers": {"XAU/USD": "GC=F", "XAG/USD": "SI=F"}
+        "tickers": {"XAU/USD": "XAUUSD=X", "XAG/USD": "XAGUSD=X"}
     },
     "crypto": {
         "name": "💎 Крипто топ",

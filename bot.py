@@ -1,6 +1,7 @@
 import feedparser
 import anthropic
 import os
+import yfinance as yf
 from datetime import datetime, timezone, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
@@ -17,26 +18,27 @@ SECTORS = {
     "forex": {
         "name": "💱 Форекс",
         "keywords": ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CHF", "forex", "eurusd", "gbpusd", "usdjpy", "dollar", "euro", "pound", "yen", "currency", "валют", "долар", "євро", "фунт"],
-        "assets": ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "USD/CHF", "NZD/USD"]
+        "tickers": {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X", "AUD/USD": "AUDUSD=X"}
     },
     "metals": {
         "name": "🥇 Метали",
         "keywords": ["gold", "silver", "XAU", "XAG", "XAUUSD", "XAGUSD", "золот", "срібл", "метал"],
-        "assets": ["XAU/USD", "XAG/USD"]
+        "tickers": {"XAU/USD": "GC=F", "XAG/USD": "SI=F"}
     },
     "crypto": {
         "name": "💎 Крипто топ",
         "keywords": ["bitcoin", "ethereum", "BTC", "ETH", "SOL", "XRP", "solana", "ripple", "crypto", "крипт", "біткоїн", "ефіріум"],
-        "assets": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT"]
+        "tickers": {"BTC": "BTC-USD", "ETH": "ETH-USD", "SOL": "SOL-USD", "XRP": "XRP-USD"}
     },
     "alts": {
         "name": "🌀 Альткоїни",
         "keywords": ["ADA", "AVAX", "DOT", "LINK", "MATIC", "UNI", "altcoin", "альткоїн", "cardano", "avalanche", "polkadot"],
-        "assets": ["ADA", "AVAX", "DOT", "LINK", "MATIC", "UNI"]
+        "tickers": {"ADA": "ADA-USD", "AVAX": "AVAX-USD", "DOT": "DOT-USD", "LINK": "LINK-USD"}
     },
     "macro": {
         "name": "🌍 Макро/Економіка",
-        "keywords": ["fed", "federal reserve", "ECB", "inflation", "GDP", "interest rate", "ФРС", "інфляція", "ВВП", "ставк", "економік", "рецесі", "president", "trump", "biden", "macron", "powell", "трамп", "байден", "пауелл", "санкці", "тариф", "trade war", "торгова війна"]
+        "keywords": ["fed", "federal reserve", "ECB", "inflation", "GDP", "interest rate", "ФРС", "інфляція", "ВВП", "ставк", "економік", "рецесі", "president", "trump", "biden", "macron", "powell", "трамп", "байден", "пауелл", "санкці", "тариф", "trade war"],
+        "tickers": {}
     }
 }
 
@@ -74,10 +76,6 @@ def init_db():
             joined_at TIMESTAMP DEFAULT NOW()
         )
     """)
-    try:
-        cur.execute("ALTER TABLE subscribers ADD COLUMN IF NOT EXISTS sectors TEXT DEFAULT 'all'")
-    except:
-        pass
     conn.commit()
     cur.close()
     conn.close()
@@ -139,6 +137,52 @@ def is_subscriber(chat_id):
     conn.close()
     return result is not None
 
+def fetch_prices(sectors):
+    tickers = {}
+    for sector_key in sectors:
+        if sector_key in SECTORS:
+            tickers.update(SECTORS[sector_key].get("tickers", {}))
+
+    if not tickers:
+        return ""
+
+    lines = ["📈 Ціни зараз\n"]
+    current_sector = None
+
+    for name, ticker in tickers.items():
+        sector_for_ticker = None
+        for sk, sv in SECTORS.items():
+            if ticker in sv.get("tickers", {}).values() and sk in sectors:
+                sector_for_ticker = sv["name"]
+                break
+
+        if sector_for_ticker != current_sector:
+            current_sector = sector_for_ticker
+            lines.append(f"\n{current_sector}")
+
+        try:
+            data = yf.Ticker(ticker)
+            hist = data.history(period="2d")
+            if len(hist) >= 2:
+                price = hist["Close"].iloc[-1]
+                prev = hist["Close"].iloc[-2]
+                change = ((price - prev) / prev) * 100
+                arrow = "🟢" if change >= 0 else "🔴"
+                sign = "+" if change >= 0 else ""
+
+                if price > 100:
+                    price_str = f"{price:,.0f}"
+                elif price > 1:
+                    price_str = f"{price:.4f}"
+                else:
+                    price_str = f"{price:.6f}"
+
+                lines.append(f"{name}  {price_str}  {arrow} {sign}{change:.2f}%")
+        except Exception as e:
+            print(f"Помилка ціни {ticker}: {e}")
+
+    return "\n".join(lines) + "\n\n——————\n"
+
 def sectors_keyboard(selected=[]):
     buttons = []
     for key, sector in SECTORS.items():
@@ -155,9 +199,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_subscriber(chat_id, username)
     user_temp_sectors[chat_id] = get_user_sectors(chat_id) or []
     await update.message.reply_text(
-        "Вітаю в TradeAgent! 📊\n\n"
-        "Обери сектори які тебе цікавлять.\n"
-        "Можна обрати декілька:",
+        "Вітаю в TradeAgent! 📊\n\nОбери сектори які тебе цікавлять.\nМожна обрати декілька:",
         reply_markup=sectors_keyboard(user_temp_sectors[chat_id])
     )
 
@@ -175,25 +217,19 @@ async def sector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_temp_sectors[chat_id].remove(sector_key)
         else:
             user_temp_sectors[chat_id].append(sector_key)
-        await query.edit_message_reply_markup(
-            reply_markup=sectors_keyboard(user_temp_sectors[chat_id])
-        )
+        await query.edit_message_reply_markup(reply_markup=sectors_keyboard(user_temp_sectors[chat_id]))
 
     elif query.data == "save_sectors":
         selected = user_temp_sectors.get(chat_id, [])
         if not selected:
             await query.edit_message_text("Будь ласка обери хоча б один сектор!")
-            await query.message.reply_text(
-                "Обери сектори:",
-                reply_markup=sectors_keyboard([])
-            )
+            await query.message.reply_text("Обери сектори:", reply_markup=sectors_keyboard([]))
             return
         update_sectors(chat_id, selected)
         names = [SECTORS[s]["name"] for s in selected if s in SECTORS]
         await query.edit_message_text(
-            f"Чудово! Ти підписався на:\n" +
-            "\n".join(names) +
-            "\n\nДайджест надходитиме щогодини по обраних секторах.\n\n"
+            f"Чудово! Ти підписався на:\n" + "\n".join(names) +
+            "\n\nДайджест з цінами надходитиме щогодини.\n\n"
             "/settings — змінити сектори\n"
             "/status — статус підписки\n"
             "/stop — відписатись"
@@ -202,10 +238,7 @@ async def sector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     user_temp_sectors[chat_id] = get_user_sectors(chat_id) or []
-    await update.message.reply_text(
-        "Зміни свої сектори:",
-        reply_markup=sectors_keyboard(user_temp_sectors[chat_id])
-    )
+    await update.message.reply_text("Зміни свої сектори:", reply_markup=sectors_keyboard(user_temp_sectors[chat_id]))
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -299,30 +332,29 @@ def analyze_with_claude(news_items, sectors):
         max_tokens=2000,
         messages=[{"role": "user", "content": f"""Ти досвідчений торговий аналітик. Склади дайджест для трейдера.
 
-Користувача цікавлять сектори: {', '.join(sector_names)}
-Аналізуй тільки новини які стосуються цих секторів.
+Користувача цікавлять: {', '.join(sector_names)}
+Аналізуй тільки релевантні новини.
 
-Форматування:
-- Тільки чистий текст і емодзі, без **, ##, __
-- Між новинами лінія ——————
+Форматування — тільки чистий текст і емодзі, без **, ##, __:
+- Між новинами: ——————
 - Sentiment: 🟢 Бичачий / 🔴 Ведмежий / ⚪ Нейтральний
 - Крипто: 💎, форекс/метали: 💱, макро: 🌍
 
-Структура кожної важливої новини:
+Структура кожної новини:
 📌 Заголовок
 
-Висновок: 2-3 речення що це означає для трейдера
+Висновок: 2-3 речення
 
-Sentiment: 🟢/🔴/⚪ + чому
+Sentiment: emoji + чому
 
-Активи: список активів
+Активи: список
 
 ——————
 
 Починай з: 📊 Дайджест ринку
 Закінчуй з: 🔮 Загальний висновок: [4-6 речень]
 
-Якщо немає релевантних новин — відповідай тільки: "НЕМАЄ_НОВИН"
+Якщо немає релевантних новин відповідай: НЕМАЄ_НОВИН
 Відповідай українською.
 
 НОВИНИ:
@@ -354,13 +386,17 @@ async def send_digest(context: ContextTypes.DEFAULT_TYPE):
                 print(f"Немає релевантних новин для {chat_id}")
                 continue
 
-            items_to_analyze = relevant[:MAX_NEWS_PER_RUN]
-            analysis = analyze_with_claude(items_to_analyze, sectors)
-
+            analysis = analyze_with_claude(relevant[:MAX_NEWS_PER_RUN], sectors)
             if "НЕМАЄ_НОВИН" in analysis:
                 continue
 
-            await context.bot.send_message(chat_id=chat_id, text=analysis)
+            prices = fetch_prices(sectors)
+            full_message = prices + analysis
+
+            if len(full_message) > 4096:
+                full_message = full_message[:4090] + "..."
+
+            await context.bot.send_message(chat_id=chat_id, text=full_message)
             print(f"Відправлено {chat_id}")
         except Exception as e:
             print(f"Помилка {chat_id}: {e}")

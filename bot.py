@@ -324,7 +324,7 @@ def fetch_twitter():
 def analyze_with_claude(news_items, sectors):
     sector_names = [SECTORS[s]["name"] for s in sectors if s in SECTORS]
     news_text = "\n\n".join([
-        f"[{item['source']}] {item['title']}\n{item['summary']}"
+        f"[{item['source']}] {item['title']}\n{item['summary']}\nПосилання: {item.get('link', '')}"
         for item in news_items
     ])
     response = client.messages.create(
@@ -348,6 +348,8 @@ def analyze_with_claude(news_items, sectors):
 Sentiment: emoji + чому
 
 Активи: список
+
+Джерело: [Назва джерела](посилання) — вбудуй активне посилання у назву джерела
 
 ——————
 

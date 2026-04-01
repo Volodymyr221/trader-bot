@@ -11,7 +11,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 CHECK_INTERVAL_MINUTES = 60
-MAX_NEWS_PER_RUN = 20
+MAX_NEWS_PER_SECTOR = 5
 HOURS_LOOKBACK = 2
 
 SECTORS = {
@@ -37,7 +37,7 @@ SECTORS = {
     },
     "macro": {
         "name": "🌍 Макро/Економіка",
-        "keywords": ["fed", "federal reserve", "ECB", "inflation", "GDP", "interest rate", "ФРС", "інфляція", "ВВП", "ставк", "економік", "рецесі", "president", "trump", "biden", "macron", "powell", "трамп", "байден", "пауелл", "санкці", "тариф", "trade war"],
+        "keywords": ["fed", "federal reserve", "ECB", "inflation", "GDP", "interest rate", "ФРС", "інфляція", "ВВП", "ставк", "економік", "рецесі", "president", "trump", "powell", "трамп", "пауелл", "санкці", "тариф", "trade war"],
         "tickers": {}
     }
 }
@@ -72,7 +72,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS subscribers (
             chat_id BIGINT PRIMARY KEY,
             username TEXT,
-            sectors TEXT DEFAULT 'all',
+            sectors TEXT DEFAULT '',
             joined_at TIMESTAMP DEFAULT NOW()
         )
     """)
@@ -137,52 +137,6 @@ def is_subscriber(chat_id):
     conn.close()
     return result is not None
 
-def fetch_prices(sectors):
-    tickers = {}
-    for sector_key in sectors:
-        if sector_key in SECTORS:
-            tickers.update(SECTORS[sector_key].get("tickers", {}))
-
-    if not tickers:
-        return ""
-
-    lines = ["📈 Ціни зараз\n"]
-    current_sector = None
-
-    for name, ticker in tickers.items():
-        sector_for_ticker = None
-        for sk, sv in SECTORS.items():
-            if ticker in sv.get("tickers", {}).values() and sk in sectors:
-                sector_for_ticker = sv["name"]
-                break
-
-        if sector_for_ticker != current_sector:
-            current_sector = sector_for_ticker
-            lines.append(f"\n{current_sector}")
-
-        try:
-            data = yf.Ticker(ticker)
-            hist = data.history(period="2d")
-            if len(hist) >= 2:
-                price = hist["Close"].iloc[-1]
-                prev = hist["Close"].iloc[-2]
-                change = ((price - prev) / prev) * 100
-                arrow = "🟢" if change >= 0 else "🔴"
-                sign = "+" if change >= 0 else ""
-
-                if price > 100:
-                    price_str = f"{price:,.0f}"
-                elif price > 1:
-                    price_str = f"{price:.4f}"
-                else:
-                    price_str = f"{price:.6f}"
-
-                lines.append(f"{name}  {price_str}  {arrow} {sign}{change:.2f}%")
-        except Exception as e:
-            print(f"Помилка ціни {ticker}: {e}")
-
-    return "\n".join(lines) + "\n\n——————\n"
-
 def sectors_keyboard(selected=[]):
     buttons = []
     for key, sector in SECTORS.items():
@@ -207,10 +161,8 @@ async def sector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = query.from_user.id
-
     if chat_id not in user_temp_sectors:
         user_temp_sectors[chat_id] = get_user_sectors(chat_id) or []
-
     if query.data.startswith("sector_"):
         sector_key = query.data.replace("sector_", "")
         if sector_key in user_temp_sectors[chat_id]:
@@ -218,7 +170,6 @@ async def sector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             user_temp_sectors[chat_id].append(sector_key)
         await query.edit_message_reply_markup(reply_markup=sectors_keyboard(user_temp_sectors[chat_id]))
-
     elif query.data == "save_sectors":
         selected = user_temp_sectors.get(chat_id, [])
         if not selected:
@@ -229,7 +180,7 @@ async def sector_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         names = [SECTORS[s]["name"] for s in selected if s in SECTORS]
         await query.edit_message_text(
             f"Чудово! Ти підписався на:\n" + "\n".join(names) +
-            "\n\nДайджест з цінами надходитиме щогодини.\n\n"
+            "\n\nДайджест надходитиме щогодини.\n\n"
             "/settings — змінити сектори\n"
             "/status — статус підписки\n"
             "/stop — відписатись"
@@ -274,14 +225,11 @@ def is_recent(entry):
     except:
         return True
 
-def item_matches_sectors(item, user_sectors):
+def item_matches_sector(item, sector_key):
     text = (item["title"] + " " + item["summary"]).lower()
-    for sector_key in user_sectors:
-        if sector_key not in SECTORS:
-            continue
-        for keyword in SECTORS[sector_key]["keywords"]:
-            if keyword.lower() in text:
-                return True
+    for keyword in SECTORS[sector_key]["keywords"]:
+        if keyword.lower() in text:
+            return True
     return False
 
 def fetch_news():
@@ -295,6 +243,7 @@ def fetch_news():
                         "id": entry.get("id", entry.link),
                         "title": entry.title,
                         "summary": entry.get("summary", "")[:300],
+                        "link": entry.link,
                         "source": feed.feed.get("title", url)
                     })
         except Exception as e:
@@ -314,6 +263,7 @@ def fetch_twitter():
                                 "id": entry.get("id", entry.link),
                                 "title": f"@{account}: {entry.title}",
                                 "summary": entry.get("summary", "")[:300],
+                                "link": entry.link,
                                 "source": f"Twitter @{account}"
                             })
                     break
@@ -321,42 +271,71 @@ def fetch_twitter():
                 continue
     return items
 
-def analyze_with_claude(news_items, sectors):
-    sector_names = [SECTORS[s]["name"] for s in sectors if s in SECTORS]
+def fetch_prices(sectors):
+    tickers = {}
+    for sector_key in sectors:
+        if sector_key in SECTORS:
+            tickers.update(SECTORS[sector_key].get("tickers", {}))
+    if not tickers:
+        return ""
+    lines = ["📈 Ціни зараз\n"]
+    current_sector = None
+    for name, ticker in tickers.items():
+        for sk, sv in SECTORS.items():
+            if ticker in sv.get("tickers", {}).values() and sk in sectors:
+                if sv["name"] != current_sector:
+                    current_sector = sv["name"]
+                    lines.append(f"\n{current_sector}")
+                break
+        try:
+            data = yf.Ticker(ticker)
+            hist = data.history(period="2d")
+            if len(hist) >= 2:
+                price = hist["Close"].iloc[-1]
+                prev = hist["Close"].iloc[-2]
+                change = ((price - prev) / prev) * 100
+                arrow = "🟢" if change >= 0 else "🔴"
+                sign = "+" if change >= 0 else ""
+                if price > 100:
+                    price_str = f"{price:,.0f}"
+                elif price > 1:
+                    price_str = f"{price:.4f}"
+                else:
+                    price_str = f"{price:.6f}"
+                lines.append(f"{name}  {price_str}  {arrow} {sign}{change:.2f}%")
+        except Exception as e:
+            print(f"Помилка ціни {ticker}: {e}")
+    return "\n".join(lines)
+
+def analyze_sector(items, sector_key):
+    sector_name = SECTORS[sector_key]["name"]
     news_text = "\n\n".join([
         f"[{item['source']}] {item['title']}\n{item['summary']}\nПосилання: {item.get('link', '')}"
-        for item in news_items
+        for item in items
     ])
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": f"""Ти досвідчений торговий аналітик. Склади дайджест для трейдера.
-
-Користувача цікавлять: {', '.join(sector_names)}
-Аналізуй тільки релевантні новини.
+        max_tokens=1000,
+        messages=[{"role": "user", "content": f"""Ти торговий аналітик. Склади короткий дайджест для сектору {sector_name}.
 
 Форматування — тільки чистий текст і емодзі, без **, ##, __:
-- Між новинами: ——————
 - Sentiment: 🟢 Бичачий / 🔴 Ведмежий / ⚪ Нейтральний
-- Крипто: 💎, форекс/метали: 💱, макро: 🌍
+- Між новинами: ——————
 
-Структура кожної новини:
+Структура кожної важливої новини:
 📌 Заголовок
 
-Висновок: 2-3 речення
+Висновок: 1-2 речення що це означає для трейдера
 
 Sentiment: emoji + чому
 
 Активи: список
 
-Джерело: [Назва джерела](посилання) — вбудуй активне посилання у назву джерела
+Джерело: [Назва](<посилання>) — активне посилання
 
 ——————
 
-Починай з: 📊 Дайджест ринку
-Закінчуй з: 🔮 Загальний висновок: [4-6 речень]
-
-Якщо немає релевантних новин відповідай: НЕМАЄ_НОВИН
+Якщо немає релевантних новин відповідай тільки: НЕМАЄ_НОВИН
 Відповідай українською.
 
 НОВИНИ:
@@ -382,24 +361,41 @@ async def send_digest(context: ContextTypes.DEFAULT_TYPE):
             if not sectors_str:
                 continue
             sectors = sectors_str.split(",")
-            relevant = [n for n in new_items if item_matches_sectors(n, sectors)]
 
-            if not relevant:
-                print(f"Немає релевантних новин для {chat_id}")
-                continue
-
-            analysis = analyze_with_claude(relevant[:MAX_NEWS_PER_RUN], sectors)
-            if "НЕМАЄ_НОВИН" in analysis:
-                continue
-
+            # Повідомлення 1 — ціни
             prices = fetch_prices(sectors)
-            full_message = prices + analysis
+            if prices:
+                await context.bot.send_message(chat_id=chat_id, text=prices)
 
-            if len(full_message) > 4096:
-                full_message = full_message[:4090] + "..."
+            # Повідомлення 2+ — дайджест по секторах
+            digest_sent = False
+            for sector_key in sectors:
+                if sector_key not in SECTORS:
+                    continue
+                relevant = [n for n in new_items if item_matches_sector(n, sector_key)]
+                if not relevant:
+                    continue
 
-            await context.bot.send_message(chat_id=chat_id, text=full_message)
-            print(f"Відправлено {chat_id}")
+                analysis = analyze_sector(relevant[:MAX_NEWS_PER_SECTOR], sector_key)
+                if "НЕМАЄ_НОВИН" in analysis:
+                    continue
+
+                sector_name = SECTORS[sector_key]["name"]
+                message = f"{'—' * 20}\n{sector_name}\n{'—' * 20}\n\n{analysis}"
+
+                if len(message) > 4096:
+                    message = message[:4090] + "..."
+
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=message,
+                    parse_mode="Markdown"
+                )
+                digest_sent = True
+
+            if digest_sent:
+                print(f"Відправлено {chat_id}")
+
         except Exception as e:
             print(f"Помилка {chat_id}: {e}")
 
